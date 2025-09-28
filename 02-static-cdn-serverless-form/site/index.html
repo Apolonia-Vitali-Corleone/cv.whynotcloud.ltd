@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>James Gao · Resume</title>
+  <link rel="preload" href="/assets/profile.jpg" as="image">
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;margin:0;line-height:1.6}
+    .wrap{max-width:880px;margin:40px auto;padding:0 20px}
+    header{display:flex;gap:20px;align-items:center}
+    img{width:96px;height:96px;border-radius:50%;object-fit:cover}
+    h1{margin:0 0 4px}
+    .chips span{display:inline-block;border:1px solid #ddd;border-radius:999px;padding:2px 10px;margin-right:6px;font-size:12px}
+    section{margin-top:28px}
+    h2{margin:24px 0 6px}
+    a{color:#0969da;text-decoration:none}
+    a:hover{text-decoration:underline}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <img src="/assets/profile.jpg" alt="avatar">
+      <div>
+        <h1>James Gao</h1>
+        <div class="chips">
+          <span>AWS SAA/SAP (target)</span><span>Go · Redis · MySQL</span><span>RabbitMQ</span>
+        </div>
+        <div><a href="mailto:you@example.com">you@example.com</a> · <a href="https://github.com/yourname" rel="noopener">GitHub</a> · <a href="/resume.pdf">PDF</a></div>
+      </div>
+    </header>
+
+    <section>
+      <h2>Summary</h2>
+      <p>Backend engineer focusing on Go + AWS. Building seckill system, marketing system, and LLM agents.</p>
+    </section>
+
+    <section>
+      <h2>Experience</h2>
+      <ul>
+        <li><b>China Telecom · Changji</b> — Cloud/IT (2025–now). Ops tooling, scripting, internal automation.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Projects</h2>
+      <ul>
+        <li><b>orderEZ</b> — Go + Gin + Redis + MySQL + RabbitMQ; idempotency, DLQ, Lua stock deduction.</li>
+        <li><b>Event Marketing</b> — Gin/Gorm + Redis/MySQL; coupon/discount models; layered repo/service/handler.</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2>Skills</h2>
+      <p>Go, Python, SQL, Redis, RabbitMQ, Docker, Linux; AWS: S3, CloudFront, IAM, Lambda, API Gateway, RDS.</p>
+    </section>
+  </div>
+</body>
+</html>
