@@ -1,0 +1,58 @@
+name: Deploy Static Resume
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - '02-static-cdn-serverless-form/site/**'
+      - '.github/workflows/deploy-static.yml'
+  workflow_dispatch: {}
+
+env:
+  AWS_REGION: ap-southeast-1
+  ROLE_ARN: arn:aws:iam::818719120332:role/GitHubDeployerRole   # ←改成你的
+  S3_BUCKET: cv.whynotcloud.ltd                                 # ←改成你的
+  CF_DISTRIBUTION_ID: EC6W5QTV3MYAG                             # ←可选：有 CloudFront 就填
+  SITE_DIR: 02-static-cdn-serverless-form/site                  # 你的简历源码目录
+  BUILD_DIR: ''                                                 # 如果有打包产物（如 dist），填 dist
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # OIDC（OpenID Connect）
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure AWS (assume role)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::818719120332:role/GitHubDeployerRole
+          aws-region: ap-southeast-1
+
+      - name: Decide upload folder
+        id: paths
+        run: |
+          if [ -n "${BUILD_DIR}" ] && [ -d "${SITE_DIR}/${BUILD_DIR}" ]; then
+            echo "UPLOAD_DIR=${SITE_DIR}/${BUILD_DIR}" >> $GITHUB_OUTPUT
+          else
+            echo "UPLOAD_DIR=${SITE_DIR}" >> $GITHUB_OUTPUT
+          fi
+
+      # 先同步“非 HTML”资源：长缓存
+      - name: Sync assets (long cache)
+        run: |
+          aws s3 sync "${{ steps.paths.outputs.UPLOAD_DIR }}/" "s3://${{ env.S3_BUCKET }}/" \
+            --delete --follow-symlinks \
+            --exclude "*.html" \
+            --cache-control "public,max-age=31536000,immutable"
+
+      # 再同步 HTML：不缓存/短缓存，避免刷新不及时
+      - name: Sync html (no cache)
+        run: |
+          aws s3 sync "${{ steps.paths.outputs.UPLOAD_DIR }}/" "s3://${{ env.S3_BUCKET }}/" \
+            --follow-symlinks \
+            --exclude "*" --include "*.html" \
+            --cache-control "no-cache"
+
