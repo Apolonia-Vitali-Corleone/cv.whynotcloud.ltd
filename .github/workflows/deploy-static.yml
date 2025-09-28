@@ -60,14 +60,23 @@ jobs:
           OUT=".out"
 
           echo "::group::Paths before copy"
-          echo "SRC (relative): ${SRC}"
-          echo "SRC (absolute): $(realpath "${SRC}")"
-          echo "OUT (relative): ${OUT}"
-          echo "OUT (absolute): $(realpath -m "${OUT}")"
+          echo "SRC: ${SRC}"
+          echo "OUT: ${OUT}"
           echo "::endgroup::"
 
           rm -rf "$OUT" && mkdir -p "$OUT"
-          cp -R "$SRC/" "$OUT/"
+
+          # ✅ 关键：拷贝目录“内容”到 .out（而不是生成 .out/site）
+          cp -a "$SRC"/. "$OUT"/
+
+          # 兜底：如果仍出现 .out/site，就把内容上移并移除该目录
+          if [ -d "$OUT/site" ]; then
+            echo "Detected $OUT/site, moving its contents up one level..."
+            shopt -s dotglob nullglob
+            mv "$OUT/site"/* "$OUT"/
+            rmdir "$OUT/site"
+            shopt -u dotglob nullglob
+          fi
 
           echo "::group::After copy: list .out (maxdepth=2)"
           find "$OUT" -maxdepth 2 -type f -print | sort
