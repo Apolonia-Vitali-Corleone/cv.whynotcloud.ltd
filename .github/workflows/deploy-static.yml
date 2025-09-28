@@ -18,7 +18,6 @@ env:
   S3_BUCKET: cv.whynotcloud.ltd
   CF_DISTRIBUTION_ID: EC6W5QTV3MYAG
   SITE_DIR: 02-static-cdn-serverless-form/site
-  BUILD_DIR: ''   # 有打包产物就写 dist
 
 jobs:
   deploy:
@@ -36,34 +35,62 @@ jobs:
           role-to-assume: ${{ env.ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Decide upload folder
-        id: paths
+      # 给 CSS/JS/图片加指纹（hash）并重写 index.html 引用
+      - name: Fingerprint assets & rewrite HTML
         run: |
           set -euo pipefail
-          if [ -n "${BUILD_DIR}" ] && [ -d "${SITE_DIR}/${BUILD_DIR}" ]; then
-            echo "UPLOAD_DIR=${SITE_DIR}/${BUILD_DIR}" >> $GITHUB_OUTPUT
-          else
-            echo "UPLOAD_DIR=${SITE_DIR}" >> $GITHUB_OUTPUT
-          fi
+          SRC="${{ env.SITE_DIR }}"
+          OUT=".out"
+          rm -rf "$OUT" && mkdir -p "$OUT"
+          cp -R "$SRC/" "$OUT/"
+          cd "$OUT"
 
+          exts="css|js|png|jpg|jpeg|gif|svg|webp|ico"
+          mapfile -t FILES < <(find . -type f -regextype posix-extended -regex ".*\.(${exts})$")
+          declare -A NEW
+          for f in "${FILES[@]}"; do
+            [[ "$f" =~ \.[0-9a-fA-F]{8}\. ]] && continue
+            h=$(sha1sum "$f" | cut -c1-8)
+            dir=$(dirname "$f"); base=$(basename "$f")
+            name="${base%.*}"; ext="${base##*.}"
+            new="${dir}/${name}.${h}.${ext}"
+            mv "$f" "$new"
+            key="${f#./}"; val="${new#./}"
+            NEW["$key"]="$val"
+          done
+
+          for html in index.html; do
+            [[ -f "$html" ]] || continue
+            for old in "${!NEW[@]}"; do
+              new="${NEW[$old]}"
+              old_esc=$(printf '%s' "$old" | sed 's/[.[\*^$\/]/\\&/g')
+              new_esc=$(printf '%s' "$new" | sed 's/[.[\*^$\/]/\\&/g')
+              sed -i -e "s|$old_esc|$new_esc|g" -e "s|./$old_esc|$new_esc|g" "$html"
+            done
+          done
+          cd -
+
+      # 资产：长缓存；不 --delete，留给 S3 生命周期定期清理旧版本
       - name: Sync assets (long cache)
         run: |
           set -euo pipefail
-          aws s3 sync "${{ steps.paths.outputs.UPLOAD_DIR }}/" "s3://${{ env.S3_BUCKET }}/" \
-            --delete --follow-symlinks \
+          aws s3 sync ".out/" "s3://${{ env.S3_BUCKET }}/" \
+            --follow-symlinks \
             --exclude "*.html" \
             --cache-control "public,max-age=31536000,immutable" \
             --only-show-errors
 
+      # HTML：no-cache，并 --delete 清理旧 HTML
       - name: Sync html (no cache)
         run: |
           set -euo pipefail
-          aws s3 sync "${{ steps.paths.outputs.UPLOAD_DIR }}/" "s3://${{ env.S3_BUCKET }}/" \
+          aws s3 sync ".out/" "s3://${{ env.S3_BUCKET }}/" \
             --delete --follow-symlinks \
             --exclude "*" --include "*.html" \
             --cache-control "no-cache" \
             --only-show-errors
 
+      # 只失效首页（通常已足够；有指纹后一般无需失效资产）
       - name: Invalidate CloudFront (index only)
         if: env.CF_DISTRIBUTION_ID != ''
         run: |
