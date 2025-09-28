@@ -17,7 +17,7 @@ env:
   ROLE_ARN: arn:aws:iam::818719120332:role/GitHubDeployerRole
   S3_BUCKET: cv.whynotcloud.ltd
   CF_DISTRIBUTION_ID: EC6W5QTV3MYAG
-  SITE_DIR: 02-static-cdn-serverless-for/site
+  SITE_DIR: 02-static-cdn-serverless-form/site
 
 jobs:
   deploy:
