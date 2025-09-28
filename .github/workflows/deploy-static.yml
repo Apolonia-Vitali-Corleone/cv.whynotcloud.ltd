@@ -4,7 +4,7 @@ on:
   push:
     branches: [ main ]
     paths:
-      - '02-static-cdn-serverless-form/site/**'
+      - '02-static-cdn-serverless-for/site/**'
       - '.github/workflows/deploy-static.yml'
   workflow_dispatch: {}
 
@@ -17,7 +17,7 @@ env:
   ROLE_ARN: arn:aws:iam::818719120332:role/GitHubDeployerRole
   S3_BUCKET: cv.whynotcloud.ltd
   CF_DISTRIBUTION_ID: EC6W5QTV3MYAG
-  SITE_DIR: 02-static-cdn-serverless-form/site
+  SITE_DIR: 02-static-cdn-serverless-for/site
 
 jobs:
   deploy:
@@ -29,20 +29,50 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Show workflow context
+        run: |
+          echo "GITHUB_WORKSPACE: $GITHUB_WORKSPACE"
+          echo "AWS_REGION: ${AWS_REGION}"
+          echo "ROLE_ARN: ${ROLE_ARN}"
+          echo "S3_BUCKET: ${S3_BUCKET}"
+          echo "CF_DISTRIBUTION_ID: ${CF_DISTRIBUTION_ID}"
+          echo "SITE_DIR (relative): ${SITE_DIR}"
+          echo "SITE_DIR (absolute): $(realpath "${SITE_DIR}")"
+          echo "Commit: ${GITHUB_SHA}"
+          echo "::group::List SITE_DIR (maxdepth=2)"
+          find "${SITE_DIR}" -maxdepth 2 -type f -print | sort
+          echo "::endgroup::"
+
       - name: Configure AWS (assume role)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ env.ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Who am I (AWS identity)
+        run: aws sts get-caller-identity
+
       # 给 CSS/JS/图片加指纹并同时重写英文与中文页面
-      - name: Fingerprint assets & rewrite HTML (en + zh)
+      - name: Fingerprint assets & rewrite HTML (en + zh) — with logs
         run: |
           set -euo pipefail
           SRC="${{ env.SITE_DIR }}"
           OUT=".out"
+
+          echo "::group::Paths before copy"
+          echo "SRC (relative): ${SRC}"
+          echo "SRC (absolute): $(realpath "${SRC}")"
+          echo "OUT (relative): ${OUT}"
+          echo "OUT (absolute): $(realpath -m "${OUT}")"
+          echo "::endgroup::"
+
           rm -rf "$OUT" && mkdir -p "$OUT"
           cp -R "$SRC/" "$OUT/"
+
+          echo "::group::After copy: list .out (maxdepth=2)"
+          find "$OUT" -maxdepth 2 -type f -print | sort
+          echo "::endgroup::"
+
           cd "$OUT"
 
           exts="css|js|png|jpg|jpeg|gif|svg|webp|ico"
@@ -54,28 +84,39 @@ jobs:
             dir=$(dirname "$f"); base=$(basename "$f")
             name="${base%.*}"; ext="${base##*.}"
             new="${dir}/${name}.${h}.${ext}"
+            echo "fingerprint: $f -> $new"
             mv "$f" "$new"
             key="${f#./}"; val="${new#./}"
             NEW["$key"]="$val"
           done
 
-          # 同时替换 /index.html 与 /cn/index.html
+          echo "::group::Rewrite HTML references"
           htmls=("index.html" "cn/index.html")
           for html in "${htmls[@]}"; do
-            [[ -f "$html" ]] || continue
-            for old in "${!NEW[@]}"; do
-              new="${NEW[$old]}"
-              old_esc=$(printf '%s' "$old" | sed 's/[.[\*^$\/]/\\&/g')
-              new_esc=$(printf '%s' "$new" | sed 's/[.[\*^$\/]/\\&/g')
-              sed -i -e "s|$old_esc|$new_esc|g" -e "s|./$old_esc|$new_esc|g" "$html"
-            done
+            if [[ -f "$html" ]]; then
+              echo "Rewriting in: $html"
+              for old in "${!NEW[@]}"; do
+                new="${NEW[$old]}"
+                old_esc=$(printf '%s' "$old" | sed 's/[.[\*^$\/]/\\&/g')
+                new_esc=$(printf '%s' "$new" | sed 's/[.[\*^$\/]/\\&/g')
+                sed -i -e "s|$old_esc|$new_esc|g" -e "s|./$old_esc|$new_esc|g" "$html"
+              done
+            else
+              echo "Skip (not found): $html"
+            fi
           done
+          echo "::endgroup::"
+
+          echo "::group::Final .out (maxdepth=2)"
+          find . -maxdepth 2 -type f -print | sort
+          echo "::endgroup::"
           cd -
 
       # 资产：长缓存；不 --delete（旧版交给 S3 生命周期清理）
-      - name: Sync assets (long cache)
+      - name: Sync assets (long cache) — show target
         run: |
           set -euo pipefail
+          echo "Sync assets to: s3://${{ env.S3_BUCKET }}/"
           aws s3 sync ".out/" "s3://${{ env.S3_BUCKET }}/" \
             --follow-symlinks \
             --exclude "*.html" \
@@ -83,20 +124,33 @@ jobs:
             --only-show-errors
 
       # HTML：no-cache，并 --delete 清理旧 HTML
-      - name: Sync HTML (no cache)
+      - name: Sync HTML (no cache) — show target
         run: |
           set -euo pipefail
+          echo "Sync HTML to: s3://${{ env.S3_BUCKET }}/"
           aws s3 sync ".out/" "s3://${{ env.S3_BUCKET }}/" \
             --delete --follow-symlinks \
             --exclude "*" --include "*.html" \
             --cache-control "no-cache" \
             --only-show-errors
 
-      # 只失效两份首页
-      - name: Invalidate CloudFront (index only)
+      # 只失效两份首页，并打印 Invalidation Id/Status
+      - name: Invalidate CloudFront (index only) — log result
         if: env.CF_DISTRIBUTION_ID != ''
         run: |
           set -euo pipefail
+          echo "Create invalidation for: /index.html /cn/index.html"
           aws cloudfront create-invalidation \
             --distribution-id "${{ env.CF_DISTRIBUTION_ID }}" \
-            --paths "/index.html" "/cn/index.html"
+            --paths "/index.html" "/cn/index.html" \
+            --query 'Invalidation.{Id:Id,Status:Status,CreateTime:CreateTime}' \
+            --output table
+
+      # （可选）列出顶层对象，确认已上传
+      - name: List top-level objects in S3 (preview)
+        run: |
+          set -euo pipefail
+          echo "::group::S3 top-level (index & cn/index)"
+          aws s3 ls "s3://${{ env.S3_BUCKET }}/" | sed -n '1,50p'
+          aws s3 ls "s3://${{ env.S3_BUCKET }}/cn/" | sed -n '1,50p' || true
+          echo "::endgroup::"
