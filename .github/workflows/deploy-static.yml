@@ -13,9 +13,9 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  AWS_REGION: ap-southeast-1
+  AWS_REGION: ap-southeast-2
   ROLE_ARN: arn:aws:iam::818719120332:role/GitHubDeployerRole
-  S3_BUCKET: cv.whynotcloud.ltd
+  S3_BUCKET: cv.whynotcloud.ltd/site
   CF_DISTRIBUTION_ID: EC6W5QTV3MYAG
   SITE_DIR: 02-static-cdn-serverless-form/site
 
