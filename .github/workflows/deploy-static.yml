@@ -35,8 +35,8 @@ jobs:
           role-to-assume: ${{ env.ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # 给 CSS/JS/图片加指纹（hash）并重写 index.html 引用
-      - name: Fingerprint assets & rewrite HTML
+      # 给 CSS/JS/图片加指纹并同时重写英文与中文页面
+      - name: Fingerprint assets & rewrite HTML (en + zh)
         run: |
           set -euo pipefail
           SRC="${{ env.SITE_DIR }}"
@@ -59,7 +59,9 @@ jobs:
             NEW["$key"]="$val"
           done
 
-          for html in index.html; do
+          # 同时替换 /index.html 与 /cn/index.html
+          htmls=("index.html" "cn/index.html")
+          for html in "${htmls[@]}"; do
             [[ -f "$html" ]] || continue
             for old in "${!NEW[@]}"; do
               new="${NEW[$old]}"
@@ -70,7 +72,7 @@ jobs:
           done
           cd -
 
-      # 资产：长缓存；不 --delete，留给 S3 生命周期定期清理旧版本
+      # 资产：长缓存；不 --delete（旧版交给 S3 生命周期清理）
       - name: Sync assets (long cache)
         run: |
           set -euo pipefail
@@ -81,7 +83,7 @@ jobs:
             --only-show-errors
 
       # HTML：no-cache，并 --delete 清理旧 HTML
-      - name: Sync html (no cache)
+      - name: Sync HTML (no cache)
         run: |
           set -euo pipefail
           aws s3 sync ".out/" "s3://${{ env.S3_BUCKET }}/" \
@@ -90,11 +92,11 @@ jobs:
             --cache-control "no-cache" \
             --only-show-errors
 
-      # 只失效首页（通常已足够；有指纹后一般无需失效资产）
+      # 只失效两份首页
       - name: Invalidate CloudFront (index only)
         if: env.CF_DISTRIBUTION_ID != ''
         run: |
           set -euo pipefail
           aws cloudfront create-invalidation \
             --distribution-id "${{ env.CF_DISTRIBUTION_ID }}" \
-            --paths "/index.html"
+            --paths "/index.html" "/cn/index.html"
