@@ -4,7 +4,7 @@ on:
   push:
     branches: [ main ]
     paths:
-      - '02-static-cdn-serverless-form/site/**'
+      - 'site/**'
       - '.github/workflows/deploy-static.yml'
   workflow_dispatch: {}
 
@@ -13,11 +13,11 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  AWS_REGION: ap-southeast-2
+  AWS_REGION: ap-east-2
   ROLE_ARN: arn:aws:iam::818719120332:role/GitHubDeployerRole
   S3_BUCKET: cv.whynotcloud.ltd
   CF_DISTRIBUTION_ID: EC6W5QTV3MYAG
-  SITE_DIR: 02-static-cdn-serverless-form/site
+  SITE_DIR: site
 
 jobs:
   deploy:
