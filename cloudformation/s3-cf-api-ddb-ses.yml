@@ -1,1 +1,301 @@
-111
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Resume site infrastructure with S3, CloudFront, API Gateway, Lambda, DynamoDB, and SES notification pipeline.
+
+Parameters:
+  SiteBucketName:
+    Type: String
+    Description: Globally unique bucket name that will host the static resume site.
+  NotificationEmail:
+    Type: String
+    Description: Verified email address used as both sender and recipient for contact notifications.
+  ProjectTag:
+    Type: String
+    Default: resume
+    Description: Value applied to the Project tag for all taggable resources.
+
+Resources:
+  ResumeBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref SiteBucketName
+      VersioningConfiguration:
+        Status: Enabled
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectTag
+
+  ResumeBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ResumeBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowCloudFrontAccess
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: 's3:GetObject'
+            Resource: !Join
+              - ''
+              - - !GetAtt ResumeBucket.Arn
+                - '/*'
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub 'arn:aws:cloudfront::${AWS::AccountId}:distribution/${ResumeDistribution}'
+
+  ResumeOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub '${AWS::StackName}-oac'
+        OriginAccessControlOriginType: s3
+        SigningProtocol: sigv4
+        SigningBehavior: always
+
+  ResumeDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultRootObject: index.html
+        HttpVersion: http2
+        PriceClass: PriceClass_100
+        Origins:
+          - Id: resume-s3-origin
+            DomainName: !GetAtt ResumeBucket.RegionalDomainName
+            S3OriginConfig: {}
+            OriginAccessControlId: !Ref ResumeOAC
+        DefaultCacheBehavior:
+          TargetOriginId: resume-s3-origin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods: [GET, HEAD, OPTIONS]
+          CachedMethods: [GET, HEAD]
+          Compress: true
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6 # CachingOptimized managed policy
+          ResponseHeadersPolicyId: 67f7725c-6f97-4210-82d7-5512b31e9d03 # CORS-With-Preflight managed policy
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectTag
+
+  ContactTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${AWS::StackName}-contact'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: SubmissionId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: SubmissionId
+          KeyType: HASH
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectTag
+
+  ContactFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: contact-handler
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                Resource: !GetAtt ContactTable.Arn
+              - Effect: Allow
+                Action:
+                  - ses:SendEmail
+                  - ses:SendRawEmail
+                Resource: '*'
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectTag
+
+  ContactFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.11
+      Handler: index.handler
+      Role: !GetAtt ContactFunctionRole.Arn
+      Timeout: 10
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref ContactTable
+          NOTIFICATION_EMAIL: !Ref NotificationEmail
+      Code:
+        ZipFile: |-
+          import json
+          import os
+          from datetime import datetime
+          from uuid import uuid4
+
+          import boto3
+
+          dynamodb = boto3.resource('dynamodb')
+          ses = boto3.client('ses')
+
+          TABLE_NAME = os.environ['TABLE_NAME']
+          NOTIFICATION_EMAIL = os.environ['NOTIFICATION_EMAIL']
+
+          def handler(event, context):
+              try:
+                  body = json.loads(event.get('body') or '{}')
+              except json.JSONDecodeError:
+                  return _response(400, {'message': 'Invalid JSON body.'})
+
+              name = (body.get('name') or '').strip()
+              email = (body.get('email') or '').strip()
+              message = (body.get('message') or '').strip()
+
+              if not name or not email or not message:
+                  return _response(400, {'message': 'name, email, and message are required.'})
+
+              submission_id = str(uuid4())
+              timestamp = datetime.utcnow().isoformat() + 'Z'
+
+              table = dynamodb.Table(TABLE_NAME)
+              table.put_item(
+                  Item={
+                      'SubmissionId': submission_id,
+                      'CreatedAt': timestamp,
+                      'Name': name,
+                      'Email': email,
+                      'Message': message,
+                  }
+              )
+
+              subject = f'New resume contact from {name}'
+              body_text = (
+                  f'Name: {name}\n'
+                  f'Email: {email}\n'
+                  f'Message:\n{message}\n\n'
+                  f'Submitted at {timestamp}'
+              )
+
+              ses.send_email(
+                  Source=NOTIFICATION_EMAIL,
+                  Destination={'ToAddresses': [NOTIFICATION_EMAIL]},
+                  Message={
+                      'Subject': {'Data': subject, 'Charset': 'UTF-8'},
+                      'Body': {'Text': {'Data': body_text, 'Charset': 'UTF-8'}},
+                  },
+              )
+
+              return _response(200, {'message': 'Submission received.'})
+
+          def _response(status, body):
+              return {
+                  'statusCode': status,
+                  'headers': {
+                      'Access-Control-Allow-Origin': '*',
+                      'Access-Control-Allow-Headers': '*',
+                  },
+                  'body': json.dumps(body),
+              }
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectTag
+
+  ContactApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub '${AWS::StackName}-contact'
+      ProtocolType: HTTP
+      CorsConfiguration:
+        AllowOrigins:
+          - '*'
+        AllowHeaders:
+          - '*'
+        AllowMethods:
+          - POST
+      Tags:
+        Project: !Ref ProjectTag
+
+  ContactIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref ContactApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt ContactFunction.Arn
+      PayloadFormatVersion: '2.0'
+
+  ContactRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref ContactApi
+      RouteKey: 'POST /contact'
+      Target: !Sub 'integrations/${ContactIntegration}'
+
+  ContactStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref ContactApi
+      StageName: '$default'
+      AutoDeploy: true
+      Tags:
+        Project: !Ref ProjectTag
+
+  ContactPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      FunctionName: !Ref ContactFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ContactApi}/*/POST/contact'
+
+  ContactTableNameMapping:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/${AWS::StackName}/contact-table'
+      Type: String
+      Value: !Ref ContactTable
+      Tags:
+        Project: !Ref ProjectTag
+
+  ContactApiEndpointParam:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub '/${AWS::StackName}/contact-endpoint'
+      Type: String
+      Value: !Sub 'https://${ContactApi}.execute-api.${AWS::Region}.amazonaws.com/contact'
+      Tags:
+        Project: !Ref ProjectTag
+
+  NotificationIdentity:
+    Type: AWS::SES::EmailIdentity
+    Properties:
+      EmailIdentity: !Ref NotificationEmail
+
+Outputs:
+  ResumeBucket:
+    Description: S3 bucket name hosting the resume.
+    Value: !Ref ResumeBucket
+  CloudFrontDomain:
+    Description: CloudFront distribution domain for the resume.
+    Value: !GetAtt ResumeDistribution.DomainName
+  ContactApiEndpoint:
+    Description: HTTPS endpoint for the contact form submissions.
+    Value: !Sub 'https://${ContactApi}.execute-api.${AWS::Region}.amazonaws.com/contact'
+  ContactTableName:
+    Description: DynamoDB table storing contact submissions.
+    Value: !Ref ContactTable
